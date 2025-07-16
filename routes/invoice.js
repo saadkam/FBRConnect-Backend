@@ -1,5 +1,7 @@
 import express from 'express';
 import axios from 'axios';
+import { createInvoice } from '../controllers/invoiceController.js';
+import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
@@ -20,5 +22,7 @@ router.post('/', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to sync with FBR', error: error.response?.data });
   }
 });
+
+router.post('/', protect, createInvoice);
 
 export default router;
