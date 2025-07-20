@@ -1,20 +1,43 @@
 import Invoice from '../models/Invoice.js';
 
+import Invoice from '../models/Invoice.js';
+
 export const createInvoice = async (req, res) => {
   try {
-    const { invoiceNumber, client, dueDate, items } = req.body;
+    const {
+      invoiceType,
+      invoiceDate,
+      sellerBusinessName,
+      sellerAddress,
+      sellerProvince,
+      buyerNTNCNIC,
+      buyerBusinessName,
+      buyerProvince,
+      buyerAddress,
+      invoiceRefNo,
+      items
+    } = req.body;
 
-    const totalAmount = items.reduce((sum, item) =>
-      sum + item.quantity * item.rate + (item.tax || 0), 0
-    );
+    // Calculate total from item totals
+    const totalValues = items.reduce((sum, item) => sum + item.totalValues, 0);
 
     const invoice = await Invoice.create({
       user: req.user._id,
-      invoiceNumber,
-      client,
-      dueDate,
+      invoiceType,
+      invoiceDate,
+      sellerBusinessName,
+      sellerAddress,
+      sellerProvince,
+      buyerNTNCNIC,
+      buyerBusinessName,
+      buyerProvince,
+      buyerAddress,
+      invoiceRefNo,
       items,
-      totalAmount,
+      synced: false,
+      fbrStatus: 'Not Synced',
+      fbrStatusCode: 'NS',
+      fbrErrors: null
     });
 
     res.status(201).json(invoice);
@@ -22,6 +45,71 @@ export const createInvoice = async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
+
+import axios from 'axios';
+import User from '../models/User.js';
+import Invoice from '../models/Invoice.js';
+
+export const syncInvoice = async (req, res) => {
+  try {
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const user = req.user;
+    if (!user.fbrToken) return res.status(400).json({ message: 'FBR token not found for user' });
+
+    const payload = {
+      invoiceType: invoice.invoiceType,
+      invoiceDate: invoice.invoiceDate,
+      sellerBusinessName: invoice.sellerBusinessName,
+      sellerAddress: invoice.sellerAddress,
+      sellerProvince: invoice.sellerProvince,
+      buyerNTNCNIC: invoice.buyerNTNCNIC,
+      buyerBusinessName: invoice.buyerBusinessName,
+      buyerProvince: invoice.buyerProvince,
+      buyerAddress: invoice.buyerAddress,
+      invoiceRefNo: invoice.invoiceRefNo || '',
+      items: invoice.items.map(item => ({
+        ...item.toObject()
+      }))
+    };
+
+    const response = await axios.post(
+      'https://gw.fbr.gov.pk/di_data/v1/di/postinvoicedata_sb', // change to prod URL later
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${user.fbrToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const fbrRes = response.data;
+
+    invoice.synced = true;
+    invoice.fbrInvoiceNumber = fbrRes.invoiceNumber;
+    invoice.fbrStatus = fbrRes.validationResponse?.status || 'Unknown';
+    invoice.fbrStatusCode = fbrRes.validationResponse?.statuscode || '';
+    invoice.fbrErrors = fbrRes.validationResponse?.errors || '';
+    await invoice.save();
+
+    res.json({
+      message: 'Invoice synced successfully',
+      invoiceNumber: fbrRes.invoiceNumber,
+      status: invoice.fbrStatus,
+      validation: fbrRes.validationResponse
+    });
+
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({
+      message: 'FBR sync failed',
+      error: err.response?.data || err.message
+    });
+  }
+};
+
 
 // GET all invoices for current user
 export const getInvoices = async (req, res) => {

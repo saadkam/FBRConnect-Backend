@@ -29,6 +29,8 @@ router.post('/', async (req, res) => {
   }
 });
 
+
+router.post('/:id/sync', protect, syncInvoice);
 router.post('/', protect, createInvoice);
 router.get('/', protect, getInvoices);
 router.get('/:id', protect, getInvoiceById);

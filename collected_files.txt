@@ -1,0 +1,298 @@
+=== config/db.js ===
+
+import mongoose from 'mongoose';
+
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGO_URI);
+    console.log(`MongoDB connected: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`MongoDB error: ${error.message}`);
+    process.exit(1);
+  }
+};
+
+export default connectDB;
+
+------------------------------------
+
+=== controllers/authController.js ===
+
+import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+export const register = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const exists = await User.findOne({ email });
+    if (exists) return res.status(400).json({ message: 'User already exists' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({ email, password: hash });
+
+    res.status(201).json({ message: 'User created successfully' });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+export const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ message: 'Invalid credentials' });
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '2h' });
+    res.json({ token });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+------------------------------------
+
+=== controllers/invoiceController.js ===
+
+import Invoice from '../models/Invoice.js';
+
+export const createInvoice = async (req, res) => {
+  try {
+    const { invoiceNumber, client, dueDate, items } = req.body;
+
+    const totalAmount = items.reduce((sum, item) =>
+      sum + item.quantity * item.rate + (item.tax || 0), 0
+    );
+
+    const invoice = await Invoice.create({
+      user: req.user._id,
+      invoiceNumber,
+      client,
+      dueDate,
+      items,
+      totalAmount,
+    });
+
+    res.status(201).json(invoice);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+// GET all invoices for current user
+export const getInvoices = async (req, res) => {
+  try {
+    const invoices = await Invoice.find({ user: req.user._id }).sort({ createdAt: -1 });
+    res.json(invoices);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching invoices', error: err.message });
+  }
+};
+
+// GET single invoice
+export const getInvoiceById = async (req, res) => {
+  try {
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    res.json(invoice);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching invoice', error: err.message });
+  }
+};
+
+// PUT update invoice
+export const updateInvoice = async (req, res) => {
+  try {
+    const updated = await Invoice.findOneAndUpdate(
+      { _id: req.params.id, user: req.user._id },
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ message: 'Invoice not found' });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Error updating invoice', error: err.message });
+  }
+};
+
+// DELETE invoice
+export const deleteInvoice = async (req, res) => {
+  try {
+    const deleted = await Invoice.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+    if (!deleted) return res.status(404).json({ message: 'Invoice not found' });
+    res.json({ message: 'Invoice deleted' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error deleting invoice', error: err.message });
+  }
+};
+
+------------------------------------
+
+=== middleware/authMiddleware.js ===
+
+import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
+
+export const protect = async (req, res, next) => {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ message: 'No token provided' });
+
+    const decoded = jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id).select('-password');
+    if (!req.user) return res.status(401).json({ message: 'User not found' });
+
+    next();
+  } catch (err) {
+    res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
+------------------------------------
+
+=== models/Invoice.js ===
+
+import mongoose from 'mongoose';
+
+const itemSchema = new mongoose.Schema({
+  description: String,
+  quantity: Number,
+  rate: Number,
+  tax: Number,
+  hsCode: { type: String, required: true }
+}, { _id: false });
+
+const invoiceSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  invoiceNumber: { type: String, required: true },
+  client: { type: String, required: true },
+  dueDate: String,
+  status: { type: String, default: 'Pending' },
+  items: [itemSchema],
+  totalAmount: Number,
+  synced: { type: Boolean, default: false },
+}, { timestamps: true });
+
+export default mongoose.model('Invoice', invoiceSchema);
+
+------------------------------------
+
+=== models/User.js ===
+
+import mongoose from 'mongoose';
+
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  fbrToken: { type: String }, // stored securely per user
+}, { timestamps: true });
+
+export default mongoose.model('User', userSchema);
+
+------------------------------------
+
+=== routes/auth.js ===
+
+import express from 'express';
+import { register, login } from '../controllers/authController.js';
+
+const router = express.Router();
+
+router.post('/register', register);
+router.post('/login', login);
+
+export default router;
+
+------------------------------------
+
+=== routes/invoice.js ===
+
+import express from 'express';
+import axios from 'axios';
+import { 
+          createInvoice,
+          getInvoices,
+          getInvoiceById,
+          updateInvoice,
+          deleteInvoice
+        } from '../controllers/invoiceController.js';
+import { protect } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+router.post('/', async (req, res) => {
+  const invoice = req.body;
+
+  try {
+    const response = await axios.post(process.env.FBR_API_URL, invoice, {
+      headers: {
+        'Authorization': `Bearer ${process.env.FBR_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    res.status(200).json({ success: true, fbrResponse: response.data });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    res.status(500).json({ success: false, message: 'Failed to sync with FBR', error: error.response?.data });
+  }
+});
+
+router.post('/', protect, createInvoice);
+router.get('/', protect, getInvoices);
+router.get('/:id', protect, getInvoiceById);
+router.put('/:id', protect, updateInvoice);
+router.delete('/:id', protect, deleteInvoice);
+
+
+export default router;
+
+------------------------------------
+
+=== index.js ===
+
+import express from 'express';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import invoiceRoutes from './routes/invoice.js';
+
+dotenv.config();
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.use('/api/invoice', invoiceRoutes);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
+
+------------------------------------
+
+=== server.js ===
+
+import express from 'express';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import connectDB from './config/db.js';
+import authRoutes from './routes/auth.js';
+import invoiceRoutes from './routes/invoice.js';
+
+dotenv.config();
+connectDB();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.use('/api/auth', authRoutes);
+
+app.use('/api/invoice', invoiceRoutes);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+------------------------------------
+
