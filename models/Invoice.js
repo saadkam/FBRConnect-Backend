@@ -16,14 +16,18 @@ const itemSchema = new mongoose.Schema({
   sroItemSerialNo: { type: String },
   fedPayable: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
-  saleType: { type: String, required: true }, // "Goods" or "Services"
+  saleType: { type: String, required: true } // "Goods" or "Services"
 }, { _id: false });
 
 const invoiceSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 
-  invoiceType: { type: String, required: true }, // e.g., "Sale Invoice"
-  invoiceDate: { type: String, required: true }, // ISO format: YYYY-MM-DD
+  invoiceType: {
+    type: String,
+    enum: ['Sale Invoice', 'Credit Note', 'Debit Note'],
+    required: true
+  },
+  invoiceDate: { type: String, required: true },
 
   sellerBusinessName: { type: String, required: true },
   sellerAddress: { type: String, required: true },
@@ -35,17 +39,21 @@ const invoiceSchema = new mongoose.Schema({
   buyerAddress: { type: String, required: true },
 
   invoiceRefNo: { type: String }, // for debit/credit notes
+  referenceInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
 
   items: [itemSchema],
 
-  // Flags
-  synced: { type: Boolean, default: false },
+  paymentStatus: {
+    type: String,
+    enum: ['Unpaid', 'Partial', 'Paid'],
+    default: 'Unpaid'
+  },
 
-  // FBR response storage
+  synced: { type: Boolean, default: false },
   fbrInvoiceNumber: { type: String },
   fbrStatusCode: { type: String },
   fbrStatus: { type: String },
-  fbrErrors: { type: String },
+  fbrErrors: { type: String }
 }, { timestamps: true });
 
 export default mongoose.model('Invoice', invoiceSchema);

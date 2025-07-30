@@ -1,6 +1,8 @@
 import Invoice from '../models/Invoice.js';
 
-import Invoice from '../models/Invoice.js';
+import axios from 'axios';
+import User from '../models/User.js';
+
 
 export const createInvoice = async (req, res) => {
   try {
@@ -46,9 +48,6 @@ export const createInvoice = async (req, res) => {
   }
 };
 
-import axios from 'axios';
-import User from '../models/User.js';
-import Invoice from '../models/Invoice.js';
 
 export const syncInvoice = async (req, res) => {
   try {
@@ -135,17 +134,18 @@ export const getInvoiceById = async (req, res) => {
 // PUT update invoice
 export const updateInvoice = async (req, res) => {
   try {
-    const updated = await Invoice.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
-      req.body,
-      { new: true }
-    );
-    if (!updated) return res.status(404).json({ message: 'Invoice not found' });
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    if (invoice.synced) return res.status(400).json({ message: 'Cannot edit a synced invoice' });
+
+    const updated = await Invoice.findByIdAndUpdate(invoice._id, req.body, { new: true });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Error updating invoice', error: err.message });
   }
 };
+
 
 // DELETE invoice
 export const deleteInvoice = async (req, res) => {
@@ -157,3 +157,126 @@ export const deleteInvoice = async (req, res) => {
     res.status(500).json({ message: 'Error deleting invoice', error: err.message });
   }
 };
+
+export const getUnsyncedInvoices = async (req, res) => {
+  try {
+    const invoices = await Invoice.find({
+      user: req.user._id,
+      synced: false
+    }).sort({ createdAt: -1 });
+
+    res.json(invoices);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching unsynced invoices', error: err.message });
+  }
+};
+
+export const updatePaymentStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['Unpaid', 'Partial', 'Paid'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value' });
+    }
+
+    const invoice = await Invoice.findOne({ _id: req.params.id, user: req.user._id });
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    invoice.paymentStatus = status;
+    await invoice.save();
+
+    res.json({ message: 'Payment status updated', invoice });
+  } catch (err) {
+    res.status(500).json({ message: 'Error updating payment status', error: err.message });
+  }
+};
+
+
+export const getInvoiceStats = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const [
+      total,
+      synced,
+      unsynced,
+      paid,
+      partial,
+      unpaid,
+      creditNotes,
+      debitNotes
+    ] = await Promise.all([
+      Invoice.countDocuments({ user: userId }),
+      Invoice.countDocuments({ user: userId, synced: true }),
+      Invoice.countDocuments({ user: userId, synced: false }),
+      Invoice.countDocuments({ user: userId, paymentStatus: 'Paid' }),
+      Invoice.countDocuments({ user: userId, paymentStatus: 'Partial' }),
+      Invoice.countDocuments({ user: userId, paymentStatus: 'Unpaid' }),
+      Invoice.countDocuments({ user: userId, invoiceType: 'Credit Note' }),
+      Invoice.countDocuments({ user: userId, invoiceType: 'Debit Note' })
+    ]);
+
+    res.json({
+      total,
+      synced,
+      unsynced,
+      paymentStatus: {
+        paid,
+        partial,
+        unpaid
+      },
+      notes: {
+        creditNotes,
+        debitNotes
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching stats', error: err.message });
+  }
+};
+
+export const createNote = async (req, res) => {
+  try {
+    const {
+      invoiceType, // "Credit Note" or "Debit Note"
+      invoiceDate,
+      invoiceRefNo, // FBR invoice number of base invoice
+      referenceInvoice, // internal ObjectId
+      sellerBusinessName,
+      sellerAddress,
+      sellerProvince,
+      buyerNTNCNIC,
+      buyerBusinessName,
+      buyerProvince,
+      buyerAddress,
+      items
+    } = req.body;
+
+    if (!['Credit Note', 'Debit Note'].includes(invoiceType)) {
+      return res.status(400).json({ message: 'Invalid note type' });
+    }
+
+    const note = await Invoice.create({
+      user: req.user._id,
+      invoiceType,
+      invoiceDate,
+      invoiceRefNo,
+      referenceInvoice,
+      sellerBusinessName,
+      sellerAddress,
+      sellerProvince,
+      buyerNTNCNIC,
+      buyerBusinessName,
+      buyerProvince,
+      buyerAddress,
+      items,
+      synced: false,
+      fbrStatus: 'Not Synced',
+      fbrStatusCode: 'NS',
+    });
+
+    res.status(201).json(note);
+  } catch (err) {
+    res.status(500).json({ message: 'Error creating note', error: err.message });
+  }
+};
+
